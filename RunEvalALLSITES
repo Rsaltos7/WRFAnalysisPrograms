@@ -1,0 +1,124 @@
+#MAkes all metrics for wind speed
+import os
+import numpy as np
+import pandas as pd
+from netCDF4 import Dataset
+from wrf import getvar, to_np, ll_to_xy, ALL_TIMES
+from glob import glob
+from tqdm import tqdm
+
+#WRF Model Configurations
+wrf_models = [
+    ("/data/wto/WRFOUT/Sac_NDown_UCM1_PBL1_FDDA1_250714/", "PBL1_MP8"),
+    ("/data/wto/WRFOUT/Sac_NDown_UCM1_PBL1_MP1_FDDA1_250716/", "PBL1_MP1"),
+     ("/data/wto/WRFOUT/Sac_NDown_UCM1_PBL1_MP6_FDDA1_250718/", "PBL1_MP6"),
+    ("/data/wto/WRFOUT/Sac_NDown_UCM1_PBL1_MP38_FDDA1_250719/", "PBL1_MP38"),
+]
+
+#NOAA Directory and Output
+data_dir = "/home/rsaltos/GHCNh_Data"
+output_csv = "Updated_MPALL_all_Metrics.csv"
+wrf_var = "wspd10"
+
+#Time window (June 2020)
+start = pd.Timestamp("2020-06-01 00:00:00")
+end = pd.Timestamp("2020-06-30 21:00:00")
+full_time_index = pd.date_range(start=start, end=end, freq='h')
+
+#Results container
+results = []
+
+#Loop through each NOAA station file
+for file in tqdm(glob(os.path.join(data_dir, "*.psv"))):
+    try:
+        df = pd.read_csv(file, delimiter='|', skiprows=32, usecols=[1, 2, 3, 4, 36])
+        df.columns = ["Station_name", "DATE", "LATITUDE", "LONGITUDE", "wind_speed"]
+
+        station = df["Station_name"].iloc[0]
+        lat = df["LATITUDE"].iloc[0]
+        lon = df["LONGITUDE"].iloc[0]
+
+        # Clean and align NOAA data
+        df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce").dt.round("h")
+        df["wind_speed"] = pd.to_numeric(df["wind_speed"], errors="coerce")
+        df = df[(df["DATE"] >= start) & (df["DATE"] <= end)].drop_duplicates(subset="DATE")
+        df = df.set_index("DATE").reindex(full_time_index)
+        df.index.name = "DATE"
+        df["wind_speed"] = df["wind_speed"] * 0.514444  # Convert knots to m/s
+
+        station_result = {
+            "Station": station,
+            "Lat": round(lat, 4),
+            "Lon": round(lon, 4),
+        }
+
+        for model_path, model_label in wrf_models:
+            try:
+                wrf_files = sorted(glob(os.path.join(model_path, "wrfout_d01_2020-06-*")))
+                if not wrf_files:
+                    print(f"⚠ No WRF files found for {model_label}")
+                    continue
+
+                # Get x/y index for lat/lon
+                sample_ds = Dataset(wrf_files[0])
+                x, y = ll_to_xy(sample_ds, lat, lon, as_int=True)
+
+                # Extract WRF wind speed values
+                wrf_values = []
+                for f in wrf_files:
+                    ds = Dataset(f)
+                    var = getvar(ds, wrf_var, timeidx=ALL_TIMES)
+                    arr = to_np(var)
+                    wrf_values.extend(arr[:, y, x] if arr.ndim == 3 else [arr[y, x]])
+
+                # Time-align
+                wrf_series = pd.Series(wrf_values, index=pd.date_range(start, periods=len(wrf_values), freq='h'))
+                merged = df.join(wrf_series.rename("WRF"), how="inner")
+
+                # Drop NaNs and missing values
+                merged = merged.dropna(subset=["wind_speed", "WRF"])
+                ref = merged["wind_speed"].values
+                model = merged["WRF"].values
+
+                # Apply valid mask: remove bad NOAA data
+                valid_mask = ref != -9999
+                ref_valid = ref[valid_mask]
+                model_valid = model[valid_mask]
+
+                if len(ref_valid) == 0:
+                    station_result[f"mean_bias_{model_label}"] = np.nan
+                    station_result[f"rmsd_{model_label}"] = np.nan
+                    station_result[f"ioa_{model_label}"] = np.nan
+                    continue
+
+                #Metrics
+                diff = model_valid - ref_valid
+                mean_bias = np.mean(diff)
+                rmsd = np.sqrt(np.mean(diff ** 2))
+
+                ref_mean = np.mean(ref_valid)
+                numerator = np.sum((model_valid - ref_valid) ** 2)
+                denominator = np.sum((np.abs(model_valid - ref_mean) + np.abs(ref_valid - ref_mean)) ** 2)
+                ioa = 1 - numerator / denominator if denominator != 0 else np.nan
+
+                # Save stats
+                station_result[f"mean_bias_{model_label}"] = round(mean_bias, 3)
+                station_result[f"rmsd_{model_label}"] = round(rmsd, 3)
+                station_result[f"ioa_{model_label}"] = round(ioa, 3)
+
+            except Exception as e:
+                print(f" Failed model {model_label} at {station}: {e}")
+                station_result[f"mean_bias_{model_label}"] = np.nan
+                station_result[f"rmsd_{model_label}"] = np.nan
+                station_result[f"ioa_{model_label}"] = np.nan
+
+        results.append(station_result)
+
+    except Exception as e:
+        print(f" Failed station file {file}: {e}")
+        continue
+
+# === Save results ===
+df_out = pd.DataFrame(results)
+df_out.to_csv(output_csv, index=False)
+print(f"\n Results saved to {output_csv}")
