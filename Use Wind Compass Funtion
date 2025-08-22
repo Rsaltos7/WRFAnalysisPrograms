@@ -1,0 +1,11 @@
+from WNDCOMPASS import plot_wind_compass
+
+plot_wind_compass(
+    "/home/rsaltos/NOAA Hourly Data test/LCD_USW00093228_2020.csv", 
+    [
+  ("/data/wto/WRFOUT/Sac_NDown_UCM1_PBL1_FDDA1_250714/", "YSU","green"),
+    ("/data/wto/WRFOUT/Sac_NDown_UCM1_PBL2_FDDA1_250710/", "MYJ","blue"),
+    ("/data/wto/WRFOUT/Sac_NDown_UCM1_PBL5_FDDA1_250711/", "MYNN 2.5","red"),
+    ],
+    "wrfout_d01_2020-06-*"
+)
