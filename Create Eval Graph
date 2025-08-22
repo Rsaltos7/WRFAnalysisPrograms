@@ -1,0 +1,81 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Load the CSV
+csv_file = "Updated_MPALL_all_Metrics.csv"
+df = pd.read_csv(csv_file)
+
+# Define metrics to plot
+metrics = {
+    "rmsd": "RMSD [m/s]",
+    "mean_bias": "Mean Bias [m/s]",
+    "ioa": "Index of Agreement"
+}
+
+# Model setup with colors and labels (update to match column suffixes)
+model_info = {
+    "PBL1_MP8": {"color": "green", "label": "YSU MP8"},
+    "PBL1_MP1": {"color": "blue", "label": "YSU MP1"},
+    "PBL1_MP6": {"color": "red", "label": "YSU MP6"},
+    "PBL1_MP38": {"color": "purple", "label": "YSU MP38"},
+}
+
+# Create subplots
+fig, axes = plt.subplots(nrows=3, ncols=1, figsize=(14, 10), sharex=True)
+metric_keys = list(metrics.keys())
+
+for i, ax in enumerate(axes):
+    metric = metric_keys[i]
+    ylabel = metrics[metric]
+
+    # Build metric column names
+    metric_cols = [f"{metric}_{model}" for model in model_info]
+
+    # Drop rows with all NaNs across selected model columns
+    df_filtered = df.dropna(subset=metric_cols, how='all')
+    df_filtered = df_filtered.sort_values(by="Station")
+
+    stations = df_filtered["Station"].values
+    x = range(len(stations))
+
+    # Compute mean values for each model
+    model_means = {
+        model_key: df_filtered[f"{metric}_{model_key}"].mean(skipna=True)
+        for model_key in model_info
+    }
+
+    # Determine best-performing model
+    if metric in ["mean_bias", "rmsd"]:
+        best_model = min(model_means, key=model_means.get)  # lower is better
+    elif metric == "ioa":
+        best_model = max(model_means, key=model_means.get)  # higher is better
+
+    for model_key, model_attr in model_info.items():
+        col_name = f"{metric}_{model_key}"
+        if col_name in df_filtered.columns:
+            y_vals = df_filtered[col_name].values
+            ax.scatter(x, y_vals, color=model_attr["color"], label=model_attr["label"])
+
+            mean_val = model_means[model_key]
+            if not pd.isna(mean_val):
+                linewidth = 3.5 if model_key == best_model else 2
+                fontweight = 'bold' if model_key == best_model else 'normal'
+
+                ax.axhline(mean_val, color=model_attr["color"], linestyle="-", alpha=0.9, linewidth=linewidth)
+                ax.text(len(stations) - 0.5, mean_val, f"{mean_val:.2f}",
+                        va='center', ha='left', fontsize=7, color=model_attr["color"], weight=fontweight)
+
+    ax.set_ylabel(ylabel)
+    ax.grid(True, linestyle="--", alpha=0.8)
+
+    if i == 0:
+        ax.legend(fontsize=12)
+
+# Final x-axis setup
+axes[-1].set_xticks(range(len(stations)))
+axes[-1].set_xticklabels(stations, rotation=45, ha='right', fontsize=14)
+axes[-1].set_xlabel("Stations")
+
+plt.tight_layout()
+#plt.savefig("allsites.png", transparent=True, bbox_inches='tight', dpi=300)
+plt.show()
